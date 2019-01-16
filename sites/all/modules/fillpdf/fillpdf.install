@@ -24,8 +24,8 @@ function fillpdf_schema() {
         'not null' => TRUE,
       ),
       'default_nid' => array(
-        'type' => 'int',
-        'unsigned' => TRUE,
+        'type' => 'varchar',
+        'length' => 255,
       ),
       'url' => array(
         'type' => 'varchar',
@@ -51,6 +51,10 @@ function fillpdf_schema() {
       'scheme' => array(
         'type' => 'varchar',
         'length' => 64,
+      ),
+      'default_entity_type' => array(
+        'type' => 'varchar',
+        'length' => 255,
       ),
     ),
     'primary key' => array('fid'),
@@ -362,4 +366,18 @@ function _fillpdf_old_file_context_load($fcid) {
   }
 
   return $json;
+}
+
+/**
+ * Add field to store default entity type. Also change default_nid to varchar.
+ */
+function fillpdf_update_7107() {
+  if (!db_field_exists('fillpdf_forms', 'default_entity_type')) {
+    db_add_field('fillpdf_forms', 'default_entity_type', array('type' => 'varchar', 'length' => 255));
+  }
+  // Change default_nid into a varchar to support entities with string IDs.
+  db_change_field('fillpdf_forms', 'default_nid', 'default_nid', array(
+    'type' => 'varchar',
+    'length' => 255,
+  ));
 }

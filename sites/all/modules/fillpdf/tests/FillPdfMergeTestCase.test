@@ -8,6 +8,8 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
   use FillPdfTestHelper;
 
   protected $testNode;
+  protected $testEntity;
+  protected $nonPrivilegedUser;
 
   /**
    *
@@ -29,7 +31,7 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
 
     // ImageFieldTestCase::setUp() is dumb, so we have to enable some modules
     // ourselves.
-    $modules = array('fillpdf', 'fillpdf_test_webform', 'fillpdf_test');
+    $modules = array('fillpdf', 'fillpdf_test_webform', 'entity_token', 'fillpdf_test');
     $success = module_enable($modules, TRUE);
     $this->assertTrue($success, t('Enabled modules: %modules', array('%modules' => implode(', ', $modules))));
 
@@ -44,10 +46,13 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
       'edit all webform submissions' => TRUE,
       'edit webform components' => TRUE,
     ));
+
+    $this->nonPrivilegedUser = $this->drupalCreateUser(array('publish own pdfs'));
   }
 
   /**
    *
+   * @throws \FieldException
    */
   public function testPdfMerging() {
     features_revert_module('fillpdf_test_webform');
@@ -56,9 +61,7 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
     $webform = webform_features_machine_name_load('fillpdf_test_webform');
     $this->assertTrue(property_exists($webform, 'nid'), 'Webform properly loaded from Features.');
 
-    // @todo: continue imitating D8 version. Create an image field (and content
-    // type, etc., if necessary).
-    $this->createImageField('field_fillpdf_test_image', 'article');
+    $this->createImageField('field_test_image', 'article');
     $files = $this->drupalGetTestFiles('image');
     $image = reset($files);
 
@@ -70,8 +73,7 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
       'create article content' => TRUE,
     ));
 
-    // @todo: Which user is actually logged in?
-    $this->testNode = node_load($this->uploadNodeImage($image, 'field_fillpdf_test_image', 'article'));
+    $this->testNode = node_load($this->uploadNodeImage($image, 'field_test_image', 'article'));
 
     // Test with a node.
     $this->uploadTestPdf();
@@ -101,8 +103,282 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
       'PDF is populated with the title of the node.'
     );
 
-    $field_fillpdf_test_image = field_get_items('node', $this->testNode, 'field_fillpdf_test_image');
-    $node_file = file_load($field_fillpdf_test_image[0]['fid']);
+
+    /**
+     * These tests cover the official (and some unofficial) ways of building
+     * FillPDF Links for entities. Official: entity_id, entity_ids, entity_type
+     * + entity_id. Unofficial: entity (synonym for entity_id), entities
+     * (synonym for entity_ids). It doesn't test entity_type + entity, but that
+     * should work too. It's not officially supported, though. It's just that
+     * the contributed patch already had those working, and there was no good
+     * reason to take them out and make it harder for people to update their
+     * version of FillPDF later.
+     */
+    $this->testEntity = node_load($this->uploadNodeImage($image, 'field_test_image', 'article'));
+
+    // Test with a node.
+    $this->uploadTestPdf();
+    $fillpdf_form_entity = fillpdf_load($this->getLatestFillPdfForm());
+
+    // Get the field definitions for the form that was created and configure
+    // them.
+    $entity_fid = $fillpdf_form_entity->fid;
+    $entity_fields = fillpdf_get_fields($entity_fid);
+    $this->mapFillPdfFieldsToNodeFields($entity_fields, $entity_fid);
+
+    // Hit the FillPDF URL, check the results from the test fill method.
+    $this->drupalGet('fillpdf', array(
+      'query' => array(
+        'fid' => $entity_fid,
+        'entity_id' => $this->testEntity->nid,
+      ),
+    ));
+
+    // We don't actually care about downloading the fake PDF. We just want to
+    // check what happened in the backend.
+    $entity_merge_result_1 = variable_get('fillpdf_test_last_merge_metadata');
+
+    $this->assertEqual(
+      $entity_merge_result_1['fields']['TextField'],
+      $this->testEntity->title,
+      'PDF is populated with the title of the node (via entity tokens
+      and single-entity format).'
+    );
+
+
+    // Hit the FillPDF URL, check the results from the test fill method.
+    $this->drupalGet('fillpdf', array(
+      'query' => array(
+        'fid' => $entity_fid,
+        'entity' => "node:{$this->testEntity->nid}",
+      ),
+    ));
+
+    // We don't actually care about downloading the fake PDF. We just want to
+    // check what happened in the backend.
+    $entity_merge_result_2 = variable_get('fillpdf_test_last_merge_metadata');
+
+    $this->assertEqual(
+      $entity_merge_result_2['fields']['TextField'],
+      $this->testEntity->title,
+      'PDF is populated with the title of the node (via entity tokens
+      and alternative single-entity format).'
+    );
+
+    $this->createImageFieldForTaxonomyTerm('field_term_image', 'tags');
+    $term_image = file_save($image);
+
+    // Test an actual entity token (taxonomy terms).
+    $test_term = entity_create('taxonomy_term', array(
+      'name' => 'Test term',
+      'vid' => taxonomy_vocabulary_machine_name_load('tags')->vid,
+      'field_term_image' => array(LANGUAGE_NONE => array(0 => (array) $term_image)),
+    ));
+    taxonomy_term_save($test_term);
+
+    // Re-map the PDF fields so that the following tests will work.
+    $this->mapFillPdfFieldsToTaxonomyTermFields($entity_fields, $entity_fid);
+
+    // Hit the FillPDF URL, check the results from the test fill method.
+    $this->drupalGet('fillpdf', array(
+      'query' => array(
+        'fid' => $entity_fid,
+        'entity_ids' => array("taxonomy_term:{$test_term->tid}"),
+      ),
+    ));
+
+    // We don't actually care about downloading the fake PDF. We just want to
+    // check what happened in the backend.
+    $entity_merge_result_3 = variable_get('fillpdf_test_last_merge_metadata');
+
+    $this->assertEqual(
+      $entity_merge_result_3['fields']['TextField'],
+      $test_term->name,
+      'PDF is populated with the title of the taxonomy term.'
+    );
+
+    $field_term_image = field_get_items('taxonomy_term', $test_term, 'field_term_image');
+    $term_file = file_load($field_term_image[0]['fid']);
+    $this->assertEqual(
+      $entity_merge_result_3['images']['ImageField']['data'],
+      base64_encode(file_get_contents($term_file->uri)),
+      '(Entity mode) Encoded image matches known image.'
+    );
+
+    $path_info = pathinfo($term_file->uri);
+    $expected_file_hash = md5($path_info['filename']) . '.' . $path_info['extension'];
+    $this->assertEqual(
+      $entity_merge_result_3['images']['ImageField']['filenamehash'],
+      $expected_file_hash,
+      '(Entity mode) Hashed filename matches known hash.'
+    );
+
+    $this->assertEqual(
+      $entity_merge_result_3['fields']['ImageField'],
+      '{image}' . drupal_realpath($term_file->uri),
+      '(Entity mode) URI in metadata matches expected URI.'
+    );
+
+    // Clean up, since we're reusing these variables again later in the same
+    // test. They weren't worth renaming.
+    unset($path_info, $expected_file_hash);
+
+
+    // Hit the FillPDF URL, check the results from the test fill method.
+    $this->drupalGet('fillpdf', array(
+      'query' => array(
+        'fid' => $entity_fid,
+        'entities' => array("taxonomy_term:{$test_term->tid}"),
+      ),
+    ));
+
+    // We don't actually care about downloading the fake PDF. We just want to
+    // check what happened in the backend.
+    $entity_merge_result_4 = variable_get('fillpdf_test_last_merge_metadata');
+
+    $this->assertEqual(
+      $entity_merge_result_4['fields']['TextField'],
+      $test_term->name,
+      'PDF is populated with the title of the taxonomy term.'
+    );
+
+
+    // Hit the FillPDF URL, check the results from the test fill method.
+    $this->drupalGet('fillpdf', array(
+      'query' => array(
+        'fid' => $entity_fid,
+        'entity_type' => 'taxonomy_term',
+        'entity_id' => $test_term->tid,
+      ),
+    ));
+
+    // We don't actually care about downloading the fake PDF. We just want to
+    // check what happened in the backend.
+    $entity_merge_result_5 = variable_get('fillpdf_test_last_merge_metadata');
+
+    $this->assertEqual(
+      $entity_merge_result_5['fields']['TextField'],
+      $test_term->name,
+      'PDF is populated with the title of the taxonomy term (via
+      simplified format).'
+    );
+
+
+    // Test filename title generation. Configure it, merge the PDF without
+    // handling, and then save it as a file and check the name.
+    db_update('fillpdf_forms')
+      ->fields(array(
+        'destination_path' => 'output',
+        'title' => 'Token_[term:name]_title',
+        'destination_redirect' => 1,
+      ))
+      ->condition('fid', $entity_fid)
+      ->execute();
+    $this->drupalGet('fillpdf', array(
+      'query' => array(
+        'fid' => $entity_fid,
+        'entity' => "taxonomy_term:{$test_term->tid}",
+      ),
+    ));
+    $where_are_we = $this->getUrl();
+    $path_parts = explode('/', parse_url($where_are_we, PHP_URL_PATH));
+    $filename = end($path_parts);
+    if (empty($filename)) {
+      // Wait, are we the d.o. testbot? Who else turns off clean URLs?
+      // Alright, then; try the query string instead.
+      $raw_query = parse_url($where_are_we, PHP_URL_QUERY);
+      parse_str($raw_query, $parse_query);
+      if (isset($parse_query['q'])) {
+        $query_parts = explode('/', $parse_query['q']);
+        $filename = end($query_parts);
+      }
+    }
+    $expected_filename = 'Token_Test_term_title.pdf';
+    $this->assertEqual($expected_filename, $filename, t('Filename of generated file (@actual) matches specified entity token pattern (@expected). Current page URL: @url', array('@actual' => $filename, '@expected' => $expected_filename, '@url' => $where_are_we)));
+
+
+    // Test that node access via entity access works.
+    // Make a basic page.
+    $entity_access_test_node = new stdClass();
+    $entity_access_test_node->type = 'page';
+    $entity_access_test_node->title = t('Entity access test');
+    $entity_access_test_node->field_body = array(
+      LANGUAGE_NONE => array(
+        0 => array(
+          'value' => 'This is test text.',
+        ),
+      ),
+    );
+    $entity_access_test_node->uid = 1;
+    node_save($entity_access_test_node);
+
+    // Upload a fresh PDF, since we changed some settings on the other one.
+    $this->uploadTestPdf();
+    $entity_access_pdf = fillpdf_load($this->getLatestFillPdfForm());
+
+    // Get the field definitions for the form that was created and configure
+    // them.
+    $entity_access_fid = $entity_access_pdf->fid;
+    $entity_access_fields = fillpdf_get_fields($entity_access_fid);
+    $this->mapFillPdfFieldsToNodeFields($entity_access_fields, $entity_access_fid);
+
+    $this->drupalLogin($this->nonPrivilegedUser);
+    $this->drupalGet('fillpdf', array(
+      'query' => array(
+        'fid' => $entity_access_fid,
+        'entity' => "node:{$entity_access_test_node->nid}",
+      ),
+    ));
+
+    $this->assertResponse(403, 'User must have access to base entity to fill in PDF.');
+
+    // Restore privileged user.
+    $this->drupalLogin($this->privilegedUser);
+
+    // Test classic default NID handling (turn off the Entity API module).
+    // It's enough to disable entity_token without the parent entity module,
+    // since we always check for entity_token specifically.
+    module_disable(array('entity_token'));
+    $this->drupalPost("admin/structure/fillpdf/{$entity_access_fid}", array(
+      'default_nid' => $entity_access_test_node->nid,
+    ), t('Update'));
+    // Ensure default_entity_type is NULL in the database, as this is a
+    // regression to make sure old-style default_nid isn't broken.
+    db_update('fillpdf_forms')
+      ->condition('fid', $entity_access_fid)
+      ->fields(array('default_entity_type' => NULL))
+      ->execute();
+    $this->drupalGet('fillpdf', array(
+      'query' => array(
+        'fid' => $entity_access_fid,
+      ),
+    ));
+
+    $default_nid_merge_result = variable_get('fillpdf_test_last_merge_metadata');
+    $this->assertEqual('Entity access test', $default_nid_merge_result['fields']['TextField'], 'Configured node properly used as default when no parameters specified.');
+
+
+    // Re-enable Entity Tokens.
+    module_enable(array('entity_token'));
+
+    // Test default entity type/entity ID. We use the browser to set these to
+    // ensure the fields are there.
+    $this->drupalPost("admin/structure/fillpdf/{$entity_fid}", array(
+      'default_nid' => $test_term->tid,
+      'default_entity_type' => 'taxonomy_term',
+    ), t('Update'));
+    $this->drupalGet('fillpdf', array(
+      'query' => array(
+        'fid' => $entity_fid,
+      ),
+    ));
+
+    $default_entity_merge_result = variable_get('fillpdf_test_last_merge_metadata');
+    $this->assertEqual('Test term', $default_entity_merge_result['fields']['TextField'], 'Test term set as default entity properly used when no parameters specified.');
+
+
+    $field_test_image = field_get_items('node', $this->testNode, 'field_test_image');
+    $node_file = file_load($field_test_image[0]['fid']);
     $this->assertEqual(
       $merge_result['images']['ImageField']['data'],
       base64_encode(file_get_contents($node_file->uri)),
@@ -128,7 +404,7 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
     foreach ($legacy_fields as $legacy_pdf_key => $legacy_field) {
       switch ($legacy_pdf_key) {
         case 'ImageField':
-          $legacy_field['value'] = '[stamp:field_fillpdf_test_image]';
+          $legacy_field['value'] = '[stamp:field_test_image]';
           break;
       }
       fillpdf_fields_create_update($fid, $legacy_pdf_key, $legacy_field, TRUE);
@@ -298,11 +574,30 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
     foreach ($fields as $pdf_key => $field) {
       switch ($pdf_key) {
         case 'ImageField':
-          $field['value'] = '[node:field_fillpdf_test_image]';
+          $field['value'] = '[node:field_test_image]';
           break;
 
         case 'TextField':
           $field['value'] = '[node:title]';
+          break;
+      }
+      fillpdf_fields_create_update($fid, $pdf_key, $field, TRUE);
+    }
+  }
+
+  /**
+   * @param $fields
+   * @param $fid
+   */
+  protected function mapFillPdfFieldsToTaxonomyTermFields($fields, $fid) {
+    foreach ($fields as $pdf_key => $field) {
+      switch ($pdf_key) {
+        case 'ImageField':
+          $field['value'] = '[term:field_term_image]';
+          break;
+
+        case 'TextField':
+          $field['value'] = '[term:name]';
           break;
       }
       fillpdf_fields_create_update($fid, $pdf_key, $field, TRUE);

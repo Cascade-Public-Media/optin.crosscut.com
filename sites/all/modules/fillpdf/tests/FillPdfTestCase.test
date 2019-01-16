@@ -32,11 +32,11 @@ class FillPdfTestCase extends FileFieldTestCase {
   public function setUp() {
     // Enable any modules required for the test. This should be an array of
     // module names.
-    parent::setUp(array('fillpdf', 'fillpdf_test'));
+    parent::setUp(array('entity_token', 'fillpdf', 'fillpdf_test'));
 
     $this->createPrivilegedUser();
 
-    $this->nonPrivilegedUser = $this->drupalCreateUser();
+    $this->nonPrivilegedUser = $this->drupalCreateUser(array('publish own pdfs'));
   }
 
   /**
@@ -48,6 +48,7 @@ class FillPdfTestCase extends FileFieldTestCase {
 
   /**
    * Ensure that fillpdf_link_from_context() functions properly.
+   * @throws \EntityMalformedException
    */
   public function testLinkFromContext() {
     // @todo: flesh out with more combinations. This one was most broken,
@@ -104,6 +105,21 @@ class FillPdfTestCase extends FileFieldTestCase {
     $actual_link2 = fillpdf_context_to_link($fid, $fake_multiple_context);
 
     $this->assertEqual($expected_link2, $actual_link2, 'fillpdf_context_to_link() generates a link with multiple Webforms correctly.');
+
+    $test_node = entity_create('node', array(
+      'type' => 'article',
+    ));
+    $test_node->nid = 123;
+    $fake_entity_context = array(
+      'entities' => array(
+        'node' => array($test_node),
+      ),
+    );
+
+    $expected_link3 = url('', array('absolute' => TRUE)) . 'fillpdf?fid=1&entity_ids[]=node:123';
+    $actual_link3 = fillpdf_context_to_link($fid, $fake_entity_context);
+
+    $this->assertEqual($expected_link3, $actual_link3, 'fillpdf_context_to_link() generates a link with entities correctly.');
   }
 
   /**
@@ -157,6 +173,26 @@ class FillPdfTestCase extends FileFieldTestCase {
     $this->drupalLogin($this->nonPrivilegedUser);
     $this->drupalGet('system/files/fillpdf/output/fillpdf_test_v4.pdf');
     $this->assertResponse(403, 'User without Administer PDFs and without Publish All PDFs cannot access PDF they cannot view the node for.');
+
+
+    // Test access when generated through entities.
+    $this->drupalLogin($this->privilegedUser);
+    $fillpdf_object = fillpdf_merge_pdf($fid, NULL, NULL, NULL, FALSE, FALSE, TRUE, FALSE, NULL, NULL, array("node:{$new_node->nid}"));
+    $saved_file_2 = fillpdf_action_save_to_file($fillpdf_object, 'fillpdf_test_entity_v4.pdf', FALSE, FALSE);
+    $saved_file_2->display = 1;
+
+    $new_node->field_pdf = array(
+      LANGUAGE_NONE => array(
+        0 => (array) $saved_file_2,
+      ),
+    );
+    node_save($new_node);
+    $this->drupalGet('system/files/fillpdf/output/fillpdf_test_entity_v4.pdf');
+    $this->assertResponse(200, 'Entity mode: User can generate and access PDF from any data when they have the Publish All PDFs permission.');
+
+    $this->drupalLogin($this->nonPrivilegedUser);
+    $this->drupalGet('system/files/fillpdf/output/fillpdf_test_entity_v4.pdf');
+    $this->assertResponse(403, 'Entity mode: User without Administer PDFs and without Publish All PDFs cannot access PDF they cannot view the node for.');
   }
 
 }

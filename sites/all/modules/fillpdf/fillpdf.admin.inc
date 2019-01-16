@@ -349,13 +349,39 @@ function fillpdf_form_edit($form, &$form_state, $fid) {
     '#title' => 'Tokens',
   ) + _fillpdf_admin_token_form(TRUE);
 
+  $entity_mode = module_exists('entity_token');
   $form['default_nid'] = array(
     '#type' => 'textfield',
-    '#title' => t('Default Node ID'),
-    '#description' => t('When filling a PDF, use this node for the data source if no node is specified in the FillPDF URL.'),
+    '#title' => $entity_mode ? t('Default Entity ID') : t('Default Node ID'),
+    '#description' => $entity_mode ? t('When filling a PDF, use this entity for the data source if none is specified in the FillPDF URL. (When filling from Webform data, this is treated as the Webform Node ID.)') : t('When filling a PDF, use this node for the data source if no node is specified in the FillPDF URL.'),
     '#maxlength' => 10,
     '#default_value' => $pdf_form->default_nid,
   );
+
+  if ($entity_mode) {
+    // Compile a list of all entity types that we know provide tokens.
+    $entity_type_options = array();
+    $entity_types = entity_get_info();
+    foreach ($entity_types as $entity_type => $entity_info) {
+      if (!empty($entity_info['token type'])) {
+        $entity_type_options[$entity_type] = $entity_info['label'];
+      }
+    }
+    $form['default_entity_type'] = array(
+      '#type' => 'select',
+      '#title' => t('Default Entity Type'),
+      '#description' => t('When filling a PDF, treat the entity ID as this type if none is specified in the FillPDF URL. If this is not set, <em>Node</em> is assumed.'),
+      '#options' => array('' => t('- None -')) + $entity_type_options,
+      '#default_value' => $pdf_form->default_entity_type,
+    );
+  }
+  else {
+    // Don't break the submit method. Just supply it blank.
+    $form['default_entity_type'] = array(
+      '#type' => 'value',
+      '#value' => '',
+    );
+  }
 
   // @todo: They can upload a PDF any time, but fields will only be generated on
   // add. Don't want to purge existing fields, however a user might have
@@ -385,15 +411,15 @@ function fillpdf_form_edit($form, &$form_state, $fid) {
   if (!empty($pdf_form->default_nid)) {
     $form['pdf_info']['populate_default'] = array(
       '#type' => 'item',
-      '#title' => 'Fill PDF from default node',
-      '#description' => l(t('Download this PDF filled with data from the default node (@node).', array('@node' => $pdf_form->default_nid)), fillpdf_pdf_link($fid)) . '<br />' .
+      '#title' => $entity_mode ? t('Fill PDF from default entity') : t('Fill PDF from default node'),
+      '#description' => ($entity_mode ? l(t('Download this PDF filled with data from the default entity (@entity).', array('@entity' => $pdf_form->default_nid)), fillpdf_pdf_link($fid)) : l(t('Download this PDF filled with data from the default node (@node).', array('@node' => $pdf_form->default_nid)), fillpdf_pdf_link($fid))) . '<br />' .
       t('If you have set a custom path on this PDF, the sample will be saved there silently.'),
     );
   }
   $form['pdf_info']['form_id'] = array(
     '#type' => 'item',
     '#title' => 'Form Info',
-    '#description' => "Form ID: [$fid]. Populate this form with node IDs, such as /fillpdf?fid=$fid&nid=10<br/>",
+    '#description' => t('Form ID: [@fid]. Populate this form with node IDs, such as @example<br>', array('@fid' => $fid, '@example' => $entity_mode ? "/fillpdf?fid=$fid&nid=10" : "/fillpdf?fid=$fid&entity_id=node:10")),
   );
   $form['extra'] = array(
     '#type' => 'fieldset',
@@ -516,7 +542,7 @@ function fillpdf_form_edit($form, &$form_state, $fid) {
  *
  */
 function fillpdf_form_edit_validate($form, &$form_state) {
-  $file = $_FILES['files']['name']['upload_pdf'];
+  $file = isset($_FILES['files']['name']['upload_pdf']) ? $_FILES['files']['name']['upload_pdf'] : NULL;
   if ($file) {
     $validate_file = _fillpdf_validate_upload($file);
     if (isset($validate_file['#error'])) {
@@ -528,7 +554,7 @@ function fillpdf_form_edit_validate($form, &$form_state) {
   $using_private_files = $scheme === 'private';
   $destination_set = !empty($form_state['values']['destination_path']);
   $private_destination_path_is_absolute = $using_private_files && $destination_set &&
-    substr($form_state['values']['destination_path'], 0, 1) === '/';
+    strpos($form_state['values']['destination_path'], '/') === 0;
 
   if ($private_destination_path_is_absolute) {
     form_set_error('destination_path', t('You have chosen to use <em>Private files</em> for storage. Your destination
@@ -554,10 +580,11 @@ function fillpdf_form_edit_submit($form, &$form_state) {
         'destination_redirect' => $form_state['values']['destination_redirect'],
         'admin_title' => $form_state['values']['admin_title'],
         'scheme' => $form_state['values']['scheme'],
+        'default_entity_type' => $form_state['values']['default_entity_type'],
       ))
       ->condition('fid', $form['#pdf_form']->fid)
       ->execute();
-    $file = $_FILES['files']['name']['upload_pdf'];
+    $file = isset($_FILES['files']['name']['upload_pdf']) ? $_FILES['files']['name']['upload_pdf'] : NULL;
     if ($file) {
       // Export the current field mappings to a variable.
       $mappings = fillpdf_generate_mappings($form['#pdf_form'], TRUE);
@@ -581,7 +608,7 @@ function fillpdf_form_edit_submit($form, &$form_state) {
  */
 function fillpdf_form_delete_confirm($form, &$form_state, $pdf_form) {
   if (is_numeric(arg(3))) {
-    $pdf_form = fillpdf_load(arg(3, FALSE, FALSE));
+    $pdf_form = fillpdf_load(arg(3), FALSE, FALSE);
   }
   if (!$pdf_form) {
     drupal_not_found();
@@ -909,6 +936,13 @@ function _fillpdf_admin_token_form($dialog = FALSE) {
     'current-user',
     'site',
   );
+
+  if (module_exists('entity_token')) {
+    $entities = entity_get_info();
+    foreach ($entities as $entity => $info) {
+      $token_types[] = !empty($info['token type']) ? $info['token type'] : $entity;
+    }
+  }
 
   // If not using Webform Rules, then show potential Webform Tokens
   // webform:-namespaced tokens.

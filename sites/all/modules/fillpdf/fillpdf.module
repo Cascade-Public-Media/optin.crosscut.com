@@ -1,11 +1,6 @@
 <?php
 
-/**
- * @file
- * Allows mappings of PDFs to site content.
- */
-
-require_once dirname(__FILE__) . '/fillpdf.deprecated.inc';
+require_once __DIR__ . '/fillpdf.deprecated.inc';
 
 define("FILLPDF_DEFAULT_SERVLET_URL", variable_get('fillpdf_remote_protocol', 'https') . "://" . variable_get('fillpdf_remote_endpoint', "fillpdf.io/xmlrpc.php"));
 module_load_include('inc', 'fillpdf', 'fillpdf.admin');
@@ -158,6 +153,8 @@ function fillpdf_modules_enabled($modules) {
 
 /**
  * Implements hook_file_download().
+ *
+ * @todo: Rewrite this to not nest so deeply, if possible. It would be better to return early.
  */
 function fillpdf_file_download($uri) {
   // Do we handle this kind of file? Check using string functions for
@@ -203,7 +200,7 @@ function fillpdf_file_download($uri) {
                   if ($stub_context['fid']) {
                     // Expand the stub context (load the entities).
                     $fillpdf_info = fillpdf_load($stub_context['fid']);
-                    $file_context = fillpdf_load_entities($fillpdf_info, $stub_context['nids'], $stub_context['webforms'], $stub_context['uc_order_ids'], $stub_context['uc_order_product_ids'], $GLOBALS['user']);
+                    $file_context = fillpdf_load_entities($fillpdf_info, $stub_context['nids'], $stub_context['webforms'], $stub_context['uc_order_ids'], $stub_context['uc_order_product_ids'], $GLOBALS['user'], $stub_context['entity_ids']);
 
                     // Check access as if they were filling in the PDF from
                     // scratch.
@@ -254,12 +251,13 @@ function fillpdf_file_download_access_alter(&$grants, $file_item, $entity_type, 
  *   gist of PDF)
  * @param $uc_order_ids
  * @param $uc_order_product_ids
+ * @param $entity_ids
  *
  * @return string
  *   The file url.
  */
-function fillpdf_pdf_link($fid, $nids = NULL, array $webform_arr = NULL, $sample = FALSE, $uc_order_ids = NULL, $uc_order_product_ids = NULL) {
-  $nids_uri = $webforms_uri = $uc_orders_uri = $uc_order_products_uri = "";
+function fillpdf_pdf_link($fid, $nids = NULL, array $webform_arr = NULL, $sample = FALSE, $uc_order_ids = NULL, $uc_order_product_ids = NULL, $entity_ids = NULL) {
+  $nids_uri = $webforms_uri = $uc_orders_uri = $uc_order_products_uri = $entity_ids_uri = '';
 
   // If an integer was provided, recast into a single-element array.
   if ($nids && !is_array($nids)) {
@@ -275,7 +273,7 @@ function fillpdf_pdf_link($fid, $nids = NULL, array $webform_arr = NULL, $sample
     }
     foreach ($webform_arr as $key => $webform) {
       $webforms_uri .= "&webforms[{$key}][nid]={$webform['nid']}";
-      $webforms_uri .= isset($webform['sid']) ? "&webforms[{$key}][sid]={$webform['sid']}" : "";
+      $webforms_uri .= isset($webform['sid']) ? "&webforms[{$key}][sid]={$webform['sid']}" : '';
     }
   }
 
@@ -293,10 +291,16 @@ function fillpdf_pdf_link($fid, $nids = NULL, array $webform_arr = NULL, $sample
     $uc_order_products_uri = "&uc_order_product_ids[]={$uc_order_product_ids}";
   }
 
+  if (is_array($entity_ids) && count($entity_ids)) {
+    foreach ($entity_ids as $entity_id) {
+      $entity_ids_uri .= "&entity_ids[]={$entity_id}";
+    }
+  }
+
   $sample = $sample ? '&sample=true' : '';
 
   // @todo: Refactor to use real url() syntax once tests in place
-  return url('', array('absolute' => TRUE)) . "fillpdf?fid={$fid}{$nids_uri}{$webforms_uri}{$uc_orders_uri}{$uc_order_products_uri}{$sample}";
+  return url('', array('absolute' => TRUE)) . "fillpdf?fid={$fid}{$nids_uri}{$webforms_uri}{$uc_orders_uri}{$uc_order_products_uri}{$entity_ids_uri}{$sample}";
 }
 
 /**
@@ -314,7 +318,7 @@ function fillpdf_parse_uri($uri = NULL) {
 
   $context = fillpdf_link_to_stub_context($uri);
 
-  fillpdf_merge_pdf($context['fid'], $context['nids'], $context['webforms'], $context['sample'], $context['force_download'], FALSE, $context['flatten'], TRUE, $context['uc_order_ids'], $context['uc_order_product_ids']);
+  fillpdf_merge_pdf($context['fid'], $context['nids'], $context['webforms'], $context['sample'], $context['force_download'], FALSE, $context['flatten'], TRUE, $context['uc_order_ids'], $context['uc_order_product_ids'], $context['entity_ids']);
 }
 
 /**
@@ -331,6 +335,7 @@ function fillpdf_link_to_stub_context($uri) {
     'webforms' => array(),
     'uc_order_ids' => array(),
     'uc_order_product_ids' => array(),
+    'entity_ids' => array(),
     'force_download' => FALSE,
     'flatten' => TRUE,
     'sample' => FALSE,
@@ -340,6 +345,8 @@ function fillpdf_link_to_stub_context($uri) {
   $query_string += array(
     'nid' => NULL,
     'nids' => NULL,
+    'entity_id' => NULL,
+    'entity_ids' => NULL,
     'webform' => NULL,
     'webforms' => NULL,
     'uc_order_id' => NULL,
@@ -371,10 +378,41 @@ function fillpdf_link_to_stub_context($uri) {
     $context['uc_order_product_ids'] = ($query_string['uc_order_product_id'] ? array($query_string['uc_order_product_id']) : $query_string['uc_order_product_ids']);
   }
 
-  if (isset($query_string['download']) && (int) $query_string['download'] == 1) {
+  // 'entities' and 'entity' are deprecated legacy formats from the original
+  // patch that added entity support. They're supported to help users, but they
+  // are not documented or official.
+  if ($query_string['entity_ids']
+    || $query_string['entity_id']
+    || isset($query_string['entity'])
+    || isset($query_string['entities'])) {
+    // Translate legacy format into modern format. For simplicity, this will
+    // overwrite the official parameter if they specify both. Specifying both is
+    // not a supported link format anyway. A single entity_id is also more
+    // powerful than entity_ids (this is consistent with the behavior of other
+    // query string parameters, and specifying both is also not a supported
+    // format).
+    if (isset($query_string['entities'])) {
+      $query_string['entity_ids'] = $query_string['entities'];
+      unset($query_string['entities']);
+    }
+    if (isset($query_string['entity'])) {
+      $query_string['entity_id'] = $query_string['entity'];
+      unset($query_string['entity']);
+    }
+    // If entity_type was specified, we assume that entity_id is just an integer
+    // and parse it as an entity of that type.
+    if (isset($query_string['entity_type'], $query_string['entity_id'])) {
+      $query_string['entity_id'] = "{$query_string['entity_type']}:{$query_string['entity_id']}";
+      unset($query_string['entity_type']);
+    }
+    $context['entity_ids'] = isset($query_string['entity_id']) ? array($query_string['entity_id']) : $query_string['entity_ids'];
+  }
+
+  if (isset($query_string['download']) && (int) $query_string['download'] === 1) {
     $context['force_download'] = TRUE;
   }
-  if (isset($query_string['flatten']) && (int) $query_string['flatten'] == 0) {
+
+  if (isset($query_string['flatten']) && (int) $query_string['flatten'] === 0) {
     $context['flatten'] = FALSE;
     return $context;
   }
@@ -383,6 +421,7 @@ function fillpdf_link_to_stub_context($uri) {
 
 /**
  * Translates a FillPDF context array into a link.
+ * @throws \EntityMalformedException
  */
 function fillpdf_context_to_link($fid, $context, $sample = FALSE) {
   $nids = NULL;
@@ -416,7 +455,17 @@ function fillpdf_context_to_link($fid, $context, $sample = FALSE) {
     }
   }
 
-  return fillpdf_pdf_link($fid, $nids, $webforms, $sample, $uc_orders, $uc_order_products);
+  $entity_ids = NULL;
+  if (!empty($context['entities'])) {
+    foreach ($context['entities'] as $entity_type => $entities_by_type) {
+      foreach ($entities_by_type as $entity) {
+        list($id) = entity_extract_ids($entity_type, $entity);
+        $entity_ids[] = $entity_type . ':' . $id;
+      }
+    }
+  }
+
+  return fillpdf_pdf_link($fid, $nids, $webforms, $sample, $uc_orders, $uc_order_products, $entity_ids);
 }
 
 /**
@@ -425,31 +474,37 @@ function fillpdf_context_to_link($fid, $context, $sample = FALSE) {
  * Constructs a page from scratch (pdf content-type) and sends it to the
  * browser or saves it, depending on if a custom path is configured or not.
  *
- * @param $fid
+ * @param int $fid
  *   The integer ID of the PDF.
- * @param $nids
- *   Array of integer IDs of the CCK nodes from which to draw data.
- * @param $webform_arr
- *   Array of integer IDs of the Webform nodes from which to draw data.
- * @param $sample
+ * @param int[] $nids
+ *   Array of integer IDs of the content (nodes) from which to draw data.
+ * @param array[] $webform_array
+ *   Array of arrays, each containing 'nid' and 'sid' keys. The 'nid' key
+ *   refers to the ID of the Webform node, and the 'sid' refers to the
+ *   Webform submission ID. If no nid is supplied, the default ID from the
+ *   FillPDF Form (if set) is used to try to load a node.
+ * @param bool $sample
  *   If "true" (exact string), each field will be filled with its field name.
- * @param $force_download
+ * @param bool $force_download
  *   Boolean. If TRUE, always send a PDF to the browser, even if a
  *   destination_path is set for the PDF.
- * @param $skip_access_check
+ * @param bool $skip_access_check
  *   Boolean. If TRUE, do not do any access checks. Allow the user to download
  *   any PDF with data from any node. Only use when access checks are being
  *   done some other way.
- * @param $flatten
+ * @param bool $flatten
  *   Boolean. If TRUE, flatten the PDF so that fields cannot be edited.
  *   Otherwise leave fields editable.
- * @param $handle
+ * @param bool $handle
  *   Boolean. If TRUE, handle the PDF, which usually consists of sending it to
  *   the users's browser or saving it as a file.
- * @param $uc_order_ids
+ * @param int[] $uc_order_ids
  *   Array of integer IDs of Ubercart orders from which to
- * @param $uc_order_product_ids
+ * @param int[] $uc_order_product_ids
  *   Array of integer IDs of Ubercart ordered products from which to draw data.
+ * @param array $entity_ids
+ *   Array of IDs of entities from which to draw data. IDs may be integers or
+ *   strings depending on the entity type.
  *
  * @return object
  *   When $handle is FALSE, this function returns the variable it would have
@@ -461,7 +516,7 @@ function fillpdf_context_to_link($fid, $context, $sample = FALSE) {
  * @todo: Refactor to take fewer arguments once tests in place.
  * MAYBE in FillPDF 3 - might not want to break backwards-compatibility.
  */
-function fillpdf_merge_pdf($fid, $nids = NULL, $webform_array = NULL, $sample = NULL, $force_download = FALSE, $skip_access_check = FALSE, $flatten = TRUE, $handle = TRUE, $uc_order_ids = NULL, $uc_order_product_ids = NULL) {
+function fillpdf_merge_pdf($fid, $nids = NULL, $webform_array = NULL, $sample = NULL, $force_download = FALSE, $skip_access_check = FALSE, $flatten = TRUE, $handle = TRUE, $uc_order_ids = NULL, $uc_order_product_ids = NULL, $entity_ids = NULL) {
   // Case 1: No $fid.
   if (is_null($fid)) {
     drupal_set_message(t('FillPDF Form ID required to print a PDF.'), 'warning');
@@ -478,15 +533,16 @@ function fillpdf_merge_pdf($fid, $nids = NULL, $webform_array = NULL, $sample = 
   }
 
   global $user;
-  $context = fillpdf_load_entities($fillpdf_info, $nids, $webform_array, $uc_order_ids, $uc_order_product_ids, $user);
+  $context = fillpdf_load_entities($fillpdf_info, $nids, $webform_array, $uc_order_ids, $uc_order_product_ids, $user, $entity_ids);
 
   $nodes = $context['nodes'];
   $webforms = $context['webforms'];
   $uc_orders = $context['uc_orders'];
   $uc_order_products = $context['uc_order_products'];
+  $entities = $context['entities'];
 
   if ($skip_access_check !== TRUE) {
-    if (!fillpdf_merge_pdf_access($nodes, $webforms, $uc_orders, $uc_order_products)) {
+    if (!fillpdf_merge_pdf_access($nodes, $webforms, $uc_orders, $uc_order_products, $entities)) {
       drupal_access_denied();
       drupal_exit();
     }
@@ -513,6 +569,7 @@ function fillpdf_merge_pdf($fid, $nids = NULL, $webform_array = NULL, $sample = 
       $webforms = array_reverse($webforms);
       $uc_orders = array_reverse($uc_orders);
       $uc_order_products = array_reverse($uc_order_products);
+      $entities = array_reverse($entities);
 
       // Node token replacements.
       if (!empty($nodes)) {
@@ -556,7 +613,34 @@ function fillpdf_merge_pdf($fid, $nids = NULL, $webform_array = NULL, $sample = 
           }
         }
       }
-      // Node token replacements.
+
+      if (!empty($entities)) {
+        foreach ($entities as $entity_type => $entities_of_type) {
+          foreach ($entities_of_type as $entity) {
+            // We have to pass the correct data key. It needs to match the
+            // type the token expects. For now, we assume that the 'token type'
+            // matches what core and contributed entity type tokens expect.
+            // This is more accurate than using the entity type in cases such
+            // as taxonomy terms. They have an entity type of 'taxonomy_term',
+            // but they expect 'term' data.
+            if (!module_exists('entity_token')) {
+              // We can't provide good functionality without the Entity Tokens
+              // module.
+              break 2;
+            }
+
+            $entity_info = entity_get_info($entity_type);
+            $token_type = !empty($entity_info['token type']) ? $entity_info['token type'] : $entity_type;
+            $entity_token_objects = array($token_type => $entity);
+            // @todo: array_merge() in loops is bad for performance. Would be good to rewrite this in a more performant way later if possible, especially once we start doing cleanups for Drupal 7 + PHP 7.
+            $token_objects = array_merge($token_objects, $entity_token_objects);
+            _fillpdf_merge_pdf_token_replace($obj->value, $token_objects, $token);
+            $transform_string = TRUE;
+            _fillpdf_process_image_tokens($entity_type, $entity, $obj, $fields, $image_data, $transform_string);
+          }
+        }
+      }
+
       // Webform token replacements.
       if (!empty($webforms)) {
         foreach ($webforms as $webform) {
@@ -602,7 +686,7 @@ function fillpdf_merge_pdf($fid, $nids = NULL, $webform_array = NULL, $sample = 
           }
         }
       }
-      // Webform token replacements.
+
       // Ubercart Order token replacements.
       if (!empty($uc_orders)) {
         foreach ($uc_orders as $uc_order) {
@@ -613,7 +697,7 @@ function fillpdf_merge_pdf($fid, $nids = NULL, $webform_array = NULL, $sample = 
 
         $transform_string = TRUE;
       }
-      // Ubercart Order token replacements.
+
       // Ubercart Order Product token replacements.
       if (!empty($uc_order_products)) {
         foreach ($uc_order_products as $uc_order_product) {
@@ -628,7 +712,7 @@ function fillpdf_merge_pdf($fid, $nids = NULL, $webform_array = NULL, $sample = 
 
         $transform_string = TRUE;
       }
-      // Ubercart Order Product token replacements.
+
       if ($transform_string) {
         // Replace <br /> occurrences with newlines.
         $str = preg_replace('|<br />|', '
@@ -675,7 +759,7 @@ function fillpdf_merge_pdf($fid, $nids = NULL, $webform_array = NULL, $sample = 
   }
 
   // Assemble some metadata that will be useful for the handling phase.
-  $fillpdf_object = _fillpdf_build_options_object($force_download, $flatten, $fillpdf_info, $data, $nodes, $webforms, $uc_orders, $uc_order_products, $token_objects, $sample);
+  $fillpdf_object = _fillpdf_build_options_object($force_download, $flatten, $fillpdf_info, $data, $nodes, $webforms, $uc_orders, $uc_order_products, $token_objects, $sample, $entities);
 
   if ($handle === TRUE) {
     // Allow modules to step in here and change the way the PDF is handled.
@@ -699,15 +783,17 @@ function fillpdf_merge_pdf($fid, $nids = NULL, $webform_array = NULL, $sample = 
  * @param $uc_order_ids
  * @param $uc_order_product_ids
  * @param $user
+ * @param $entity_ids
  *
  * @return array
  */
-function fillpdf_load_entities($fillpdf_info, $nids, $webform_array, $uc_order_ids, $uc_order_product_ids, $user) {
+function fillpdf_load_entities($fillpdf_info, $nids, $webform_array, $uc_order_ids, $uc_order_product_ids, $user, $entity_ids) {
   $context = array(
     'nodes' => array(),
     'webforms' => array(),
     'uc_orders' => array(),
     'uc_order_products' => array(),
+    'entities' => array(),
   );
 
   // If $webform_array contains entries with an sid, but not an nid, set the nid
@@ -720,8 +806,11 @@ function fillpdf_load_entities($fillpdf_info, $nids, $webform_array, $uc_order_i
     }
   }
 
-  // If no nid is given, use the default.
-  if (!empty($fillpdf_info->default_nid) && empty($nids) && empty($webform_array)) {
+  $entity_mode = module_exists('entity_token');
+  // If no nid is given, and Entity API is disabled, use the default nid as a
+  // classic node. (If Entity API is enabled, we'll handle it as an entity later
+  // on in this function.)
+  if (!$entity_mode && !empty($fillpdf_info->default_nid) && empty($nids) && empty($webform_array)) {
     $default_node = node_load($fillpdf_info->default_nid);
     if ($default_node) {
       // Default node is a non-webform node.
@@ -790,6 +879,35 @@ function fillpdf_load_entities($fillpdf_info, $nids, $webform_array, $uc_order_i
     }
     return $context;
   }
+
+  // Entities.
+  $entities_by_type = array();
+  if ($entity_mode) {
+    // If no entity IDs are specified but we have a default NID, prime a plain
+    // entity ID here. The default entity type will be added just below.
+    if (empty($entity_ids) && !empty($fillpdf_info->default_nid)) {
+      $entity_ids = array($fillpdf_info->default_nid);
+    }
+
+    if (!empty($entity_ids)) {
+      foreach ($entity_ids as $entity_id) {
+        list($type, $id) = strpos($entity_id, ':') ? explode(':', $entity_id) : array(
+          $entity_id,
+          NULL
+        );
+        // Type might be missing, in which case we default to either the default
+        // entity type (if exists) or 'node' if none is set.
+        if (empty($id)) {
+          $id = $type;
+          $type = !empty($fillpdf_info->default_entity_type) ? $fillpdf_info->default_entity_type : 'node';
+        }
+        $entities_by_type += array($type => array());
+        $entities_by_type[$type][] = entity_load_single($type, $id);
+      }
+      $context['entities'] = $entities_by_type;
+    }
+  }
+
   return $context;
 }
 
@@ -809,7 +927,9 @@ function _fillpdf_process_image_tokens($entity_type, $entity, $obj, &$fields, &$
     if (!$field_data['type'] === 'image') {
       continue;
     }
-    if ($obj->value === "[{$entity_type}:{$field_name}]") {
+    $info = entity_get_info($entity_type);
+    $token_type = !empty($info['token type']) ? $info['token type'] : $entity;
+    if ($obj->value === "[{$token_type}:{$field_name}]") {
       // It's a match!
       $image_field = field_get_items($entity_type, $entity, $field_name);
       if (!$image_field) {
@@ -883,10 +1003,11 @@ function _fillpdf_merge_pdf_token_replace($value, $token_objects, &$existing_tok
  * @param $uc_orders
  * @param $uc_order_products
  * @param $token_objects
- *
+ * @param bool $sample
+ * @param $entities
  * @return object
  */
-function _fillpdf_build_options_object($force_download, $flatten, $fillpdf_info, $data, $nodes, $webforms, $uc_orders, $uc_order_products, $token_objects, $sample = FALSE) {
+function _fillpdf_build_options_object($force_download, $flatten, $fillpdf_info, $data, $nodes, $webforms, $uc_orders, $uc_order_products, $token_objects, $sample = FALSE, $entities) {
   // @todo: Convert function parameters to use $options
   // and add those into $fillpdf_info.
   $fillpdf_object = new stdClass();
@@ -897,6 +1018,7 @@ function _fillpdf_build_options_object($force_download, $flatten, $fillpdf_info,
     'webforms' => $webforms,
     'uc_orders' => $uc_orders,
     'uc_order_products' => $uc_order_products,
+    'entities' => $entities,
   );
   $fillpdf_object->token_objects = $token_objects;
   $fillpdf_object->options = array(
@@ -941,7 +1063,12 @@ function fillpdf_merge_perform_pdf_action($fillpdf_object, $action = 'download',
   if ($action == 'default') {
     // Determine the default action, then re-set $action to that.
     if (empty($pdf_info->destination_path) === FALSE) {
-      $action = 'save';
+      if ($pdf_info->destination_redirect) {
+        $action = 'redirect';
+      }
+      else {
+        $action = 'save';
+      }
     }
     else {
       $action = 'download';
@@ -1076,8 +1203,14 @@ function fillpdf_fillpdf_merge_pre_handle($fillpdf) {
  * Make sure the user has access to data they want to populate the PDF.
  *
  * @todo: Support passing $account, for testability.
+ * @param array $nodes
+ * @param array $webforms
+ * @param array $uc_orders
+ * @param array $uc_order_products
+ * @param array $entities
+ * @return bool
  */
-function fillpdf_merge_pdf_access($nodes = array(), $webforms = array(), $uc_orders = array(), $uc_order_products = array()) {
+function fillpdf_merge_pdf_access($nodes = array(), $webforms = array(), $uc_orders = array(), $uc_order_products = array(), $entities = array()) {
   if (user_access('administer pdfs') || user_access('publish all pdfs')) {
     return TRUE;
   }
@@ -1090,6 +1223,7 @@ function fillpdf_merge_pdf_access($nodes = array(), $webforms = array(), $uc_ord
   if (empty($webforms)) {
     foreach ($nodes as $node) {
       // Own node?
+      // @todo: It's probably enough to check node_access() here. Figure out what the expected behavior should be, write a test, and remove the second condition if it isn't needed. Otherwise, add an appropriate comment. The permission is called "publish own pdfs", but it's really "publish pdfs" (without it or better, no PDFs can be published despite access).
       if (!(node_access('view', $node)) || ($node->uid != $user->uid)) {
         return FALSE;
       }
@@ -1105,7 +1239,7 @@ function fillpdf_merge_pdf_access($nodes = array(), $webforms = array(), $uc_ord
   }
 
   // Own webform submission?
-  if (!(empty($webforms))) {
+  if (!empty($webforms)) {
     foreach ($webforms as $webform) {
       if (!(webform_submission_access($webform['webform'], $webform['submission'], 'view'))) {
         return FALSE;
@@ -1136,6 +1270,17 @@ function fillpdf_merge_pdf_access($nodes = array(), $webforms = array(), $uc_ord
       // incorrectly, so we check it manually as well. Not less secure.
       if ((!uc_order_order_product_access('view', $uc_order_product, $account) || !user_access("publish {$order_status} order data")) && !user_access('view all orders')) {
         return FALSE;
+      }
+    }
+  }
+
+  // Access to entities?
+  if (!empty($entities)) {
+    foreach ($entities as $entity_type => $entities_of_type) {
+      foreach ($entities_of_type as $entity_id => $entity) {
+        if (!entity_access('view', $entity_type, $entity, $account)) {
+          return FALSE;
+        }
       }
     }
   }
