@@ -70,6 +70,7 @@ function fillpdf_schema() {
       'pdf_key' => array(
         'type' => 'varchar',
         'length' => 255,
+        'binary' => TRUE,
         'not null' => TRUE,
       ),
       'label' => array(
@@ -168,8 +169,25 @@ function _fillpdf_add_publish_completed_orders_permission() {
  * Implements hook_uninstall().
  */
 function fillpdf_uninstall() {
-  variable_del('fillpdf_uc_order_initialized');
-  variable_del('fillpdf_scheme');
+  require_once __DIR__ . '/fillpdf.module';
+
+  $result = db_select('fillpdf_forms', 'ff')
+    ->fields('ff', array('fid'))
+    ->execute();
+  while ($fid = $result->fetchColumn()) {
+    fillpdf_form_delete_file($fid);
+  }
+
+  $variables = array(
+    'fillpdf_local_service_endpoint',
+    'fillpdf_scheme',
+    'fillpdf_service',
+    'fillpdf_test_last_merge_metadata',
+    'fillpdf_uc_order_initialized',
+  );
+  foreach ($variables as $variable) {
+    variable_del($variable);
+  }
 }
 
 /**
@@ -379,5 +397,17 @@ function fillpdf_update_7107() {
   db_change_field('fillpdf_forms', 'default_nid', 'default_nid', array(
     'type' => 'varchar',
     'length' => 255,
+  ));
+}
+
+/**
+ * Mark {fillpdf_fields}.pdf_key BINARY to make it behave case-sensitive.
+ */
+function fillpdf_update_7108() {
+  db_change_field('fillpdf_fields', 'pdf_key', 'pdf_key', array(
+    'type' => 'varchar',
+    'length' => 255,
+    'binary' => TRUE,
+    'not null' => TRUE,
   ));
 }

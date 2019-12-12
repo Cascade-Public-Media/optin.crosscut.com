@@ -27,7 +27,9 @@
  *
  * @throws Exception
  *
- * @deprecated Use fillpdf_merge_execute_pdf_action() instead.
+ * @deprecated in fillpdf:7.x-1.10 and is removed from all future branches. Use
+ * fillpdf_merge_execute_pdf_action().
+ * @see https://www.drupal.org/project/fillpdf/issues/2538428
  */
 function fillpdf_merge_handle_pdf($pdf_info, $pdf_data, $token_objects, $action = 'download', $force_download = FALSE) {
   if ($pdf_info->scheme === 'private') {
@@ -97,7 +99,9 @@ function fillpdf_merge_handle_pdf($pdf_info, $pdf_data, $token_objects, $action 
  *
  * @throws \Exception
  *
- * @deprecated Use fillpdf_action_save_to_file() instead.
+ * @deprecated in fillpdf:7.x-1.10 and is removed from all future branches. Use
+ * fillpdf_action_save_to_file().
+ * @see https://www.drupal.org/project/fillpdf/issues/2538428
  */
 function fillpdf_save_to_file($pdf_info, $pdf_data, $token_objects, $output_name, $redirect = TRUE, $redirect_to_file = FALSE, $destination_path_override = NULL) {
   if ($pdf_info->scheme === 'private') {
@@ -154,6 +158,10 @@ function fillpdf_save_to_file($pdf_info, $pdf_data, $token_objects, $output_name
 
 /**
  * Stores the updated $field in the database.
+ *
+ * @deprecated in fillpdf:7.x-1.11 and is removed from all future branches. Use
+ * fillpdf_fields_create_update().
+ * @see https://www.drupal.org/project/fillpdf/issues/2332323
  */
 function fillpdf_update_field($pdf_form, $field, $old_key) {
   $field = (array) $field;

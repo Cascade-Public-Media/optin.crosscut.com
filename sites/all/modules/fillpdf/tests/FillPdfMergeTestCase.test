@@ -3,7 +3,7 @@
 /**
  * Tests that PDF population and token replacement works.
  */
-class FillPdfMergeTestCase extends ImageFieldTestCase {
+class FillPdfMergeTestCase extends DrupalWebTestCase {
 
   use FillPdfTestHelper;
 
@@ -12,28 +12,28 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
   protected $nonPrivilegedUser;
 
   /**
-   *
+   * {@inheritdoc}
    */
   public static function getInfo() {
     // Note: getInfo() strings are not translated with t().
     return array(
-      'name' => 'FillPDF (Merging)',
+      'name' => 'FillPDF merging',
       'description' => 'Ensure that token and image replacement work.',
       'group' => 'FillPDF',
     );
   }
 
   /**
-   *
+   * {@inheritdoc}
    */
   public function setUp() {
-    parent::setUp();
-
-    // ImageFieldTestCase::setUp() is dumb, so we have to enable some modules
-    // ourselves.
-    $modules = array('fillpdf', 'fillpdf_test_webform', 'entity_token', 'fillpdf_test');
-    $success = module_enable($modules, TRUE);
-    $this->assertTrue($success, t('Enabled modules: %modules', array('%modules' => implode(', ', $modules))));
+    $modules = array(
+      'fillpdf',
+      'fillpdf_test_webform',
+      'entity_token',
+      'fillpdf_test',
+    );
+    parent::setUp($modules);
 
     $this->createPrivilegedUser();
     $this->configureBackend();
@@ -51,6 +51,7 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
   }
 
   /**
+   * Test PDF merging.
    *
    * @throws \FieldException
    */
@@ -61,7 +62,7 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
     $webform = webform_features_machine_name_load('fillpdf_test_webform');
     $this->assertTrue(property_exists($webform, 'nid'), 'Webform properly loaded from Features.');
 
-    $this->createImageField('field_test_image', 'article');
+    $this->createImageField('field_test_image', 'node', 'article');
     $files = $this->drupalGetTestFiles('image');
     $image = reset($files);
 
@@ -73,7 +74,7 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
       'create article content' => TRUE,
     ));
 
-    $this->testNode = node_load($this->uploadNodeImage($image, 'field_test_image', 'article'));
+    $this->testNode = node_load($this->createImageFieldEntity($image, 'field_test_image', 'node', 'article'));
 
     // Test with a node.
     $this->uploadTestPdf();
@@ -83,7 +84,7 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
     // them.
     $fid = $fillpdf_form->fid;
     $fields = fillpdf_get_fields($fid);
-    $this->mapFillPdfFieldsToNodeFields($fields, $fid);
+    $this->mapFillPdfFieldsToEntityFields('node', $fields, $fid);
 
     // Hit the FillPDF URL, check the results from the test fill method.
     $this->drupalGet('fillpdf', array(
@@ -103,18 +104,15 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
       'PDF is populated with the title of the node.'
     );
 
-
-    /**
-     * These tests cover the official (and some unofficial) ways of building
-     * FillPDF Links for entities. Official: entity_id, entity_ids, entity_type
-     * + entity_id. Unofficial: entity (synonym for entity_id), entities
-     * (synonym for entity_ids). It doesn't test entity_type + entity, but that
-     * should work too. It's not officially supported, though. It's just that
-     * the contributed patch already had those working, and there was no good
-     * reason to take them out and make it harder for people to update their
-     * version of FillPDF later.
-     */
-    $this->testEntity = node_load($this->uploadNodeImage($image, 'field_test_image', 'article'));
+    // These tests cover the official (and some unofficial) ways of building
+    // FillPDF Links for entities. Official: entity_id, entity_ids, entity_type
+    // + entity_id. Unofficial: entity (synonym for entity_id), entities
+    // (synonym for entity_ids). It doesn't test entity_type + entity, but that
+    // should work too. It's not officially supported, though. It's just that
+    // the contributed patch already had those working, and there was no good
+    // reason to take them out and make it harder for people to update their
+    // version of FillPDF later.
+    $this->testEntity = node_load($this->createImageFieldEntity($image, 'field_test_image', 'node', 'article'));
 
     // Test with a node.
     $this->uploadTestPdf();
@@ -124,7 +122,7 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
     // them.
     $entity_fid = $fillpdf_form_entity->fid;
     $entity_fields = fillpdf_get_fields($entity_fid);
-    $this->mapFillPdfFieldsToNodeFields($entity_fields, $entity_fid);
+    $this->mapFillPdfFieldsToEntityFields('node', $entity_fields, $entity_fid);
 
     // Hit the FillPDF URL, check the results from the test fill method.
     $this->drupalGet('fillpdf', array(
@@ -145,7 +143,6 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
       and single-entity format).'
     );
 
-
     // Hit the FillPDF URL, check the results from the test fill method.
     $this->drupalGet('fillpdf', array(
       'query' => array(
@@ -165,19 +162,15 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
       and alternative single-entity format).'
     );
 
-    $this->createImageFieldForTaxonomyTerm('field_term_image', 'tags');
+    $this->createImageField('field_term_image', 'taxonomy_term', 'tags');
     $term_image = file_save($image);
 
     // Test an actual entity token (taxonomy terms).
-    $test_term = entity_create('taxonomy_term', array(
-      'name' => 'Test term',
-      'vid' => taxonomy_vocabulary_machine_name_load('tags')->vid,
-      'field_term_image' => array(LANGUAGE_NONE => array(0 => (array) $term_image)),
-    ));
-    taxonomy_term_save($test_term);
+    $tid = $this->createImageFieldEntity($term_image, 'field_term_image', 'taxonomy_term', 'tags', 'Test term');
+    $test_term = taxonomy_term_load($tid);
 
     // Re-map the PDF fields so that the following tests will work.
-    $this->mapFillPdfFieldsToTaxonomyTermFields($entity_fields, $entity_fid);
+    $this->mapFillPdfFieldsToEntityFields('taxonomy_term', $entity_fields, $entity_fid);
 
     // Hit the FillPDF URL, check the results from the test fill method.
     $this->drupalGet('fillpdf', array(
@@ -223,7 +216,6 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
     // test. They weren't worth renaming.
     unset($path_info, $expected_file_hash);
 
-
     // Hit the FillPDF URL, check the results from the test fill method.
     $this->drupalGet('fillpdf', array(
       'query' => array(
@@ -241,7 +233,6 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
       $test_term->name,
       'PDF is populated with the title of the taxonomy term.'
     );
-
 
     // Hit the FillPDF URL, check the results from the test fill method.
     $this->drupalGet('fillpdf', array(
@@ -262,7 +253,6 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
       'PDF is populated with the title of the taxonomy term (via
       simplified format).'
     );
-
 
     // Test filename title generation. Configure it, merge the PDF without
     // handling, and then save it as a file and check the name.
@@ -294,8 +284,12 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
       }
     }
     $expected_filename = 'Token_Test_term_title.pdf';
-    $this->assertEqual($expected_filename, $filename, t('Filename of generated file (@actual) matches specified entity token pattern (@expected). Current page URL: @url', array('@actual' => $filename, '@expected' => $expected_filename, '@url' => $where_are_we)));
-
+    $args = array(
+      '@actual' => $filename,
+      '@expected' => $expected_filename,
+      '@url' => $where_are_we,
+    );
+    $this->assertEqual($expected_filename, $filename, t('Filename of generated file (@actual) matches specified entity token pattern (@expected). Current page URL: @url', $args));
 
     // Test that node access via entity access works.
     // Make a basic page.
@@ -320,7 +314,7 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
     // them.
     $entity_access_fid = $entity_access_pdf->fid;
     $entity_access_fields = fillpdf_get_fields($entity_access_fid);
-    $this->mapFillPdfFieldsToNodeFields($entity_access_fields, $entity_access_fid);
+    $this->mapFillPdfFieldsToEntityFields('node', $entity_access_fields, $entity_access_fid);
 
     $this->drupalLogin($this->nonPrivilegedUser);
     $this->drupalGet('fillpdf', array(
@@ -357,7 +351,6 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
     $default_nid_merge_result = variable_get('fillpdf_test_last_merge_metadata');
     $this->assertEqual('Entity access test', $default_nid_merge_result['fields']['TextField'], 'Configured node properly used as default when no parameters specified.');
 
-
     // Re-enable Entity Tokens.
     module_enable(array('entity_token'));
 
@@ -375,7 +368,6 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
 
     $default_entity_merge_result = variable_get('fillpdf_test_last_merge_metadata');
     $this->assertEqual('Test term', $default_entity_merge_result['fields']['TextField'], 'Test term set as default entity properly used when no parameters specified.');
-
 
     $field_test_image = field_get_items('node', $this->testNode, 'field_test_image');
     $node_file = file_load($field_test_image[0]['fid']);
@@ -522,7 +514,7 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
   }
 
   /**
-   *
+   * Tests PDF merging using a local service.
    */
   public function testLocalServicePdfMerging() {
     $this->configureLocalServiceBackend();
@@ -540,7 +532,25 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
   }
 
   /**
-   *
+   * Tests PDF merging using a local install of pdftk.
+   */
+  public function testPdftkPdfMerging() {
+    $this->configurePdftkBackend();
+    if (!fillpdf_pdftk_check()) {
+      // No pdftk installed, so don't run any assertions.
+      return;
+    }
+
+    // The testing UI doesn't clearly indicate that these tests are being run by
+    // default because we delegate to backendTest(). This is a convenience
+    // marker.
+    $this->assertTrue(TRUE, 'Detected pdftk. Running tests.');
+
+    $this->backendTest();
+  }
+
+  /**
+   * Tests PDF merging.
    */
   protected function backendTest() {
     $this->uploadTestPdf();
@@ -552,7 +562,7 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
 
     $this->assertFalse(empty($fields), 'PDF contained actual fields.');
 
-    $this->mapFillPdfFieldsToNodeFields($fields, $fillpdf_form->fid);
+    $this->mapFillPdfFieldsToEntityFields('node', $fields, $fillpdf_form->fid);
 
     // Hit the generation callback, and check the results from merging.
     $this->drupalGet('fillpdf', array(
@@ -564,44 +574,6 @@ class FillPdfMergeTestCase extends ImageFieldTestCase {
     $maybe_pdf = $this->drupalGetContent();
     $finfo = new \finfo(FILEINFO_MIME_TYPE);
     $this->assertEqual('application/pdf', $finfo->buffer($maybe_pdf));
-  }
-
-  /**
-   * @param $fields
-   * @param $fid
-   */
-  protected function mapFillPdfFieldsToNodeFields($fields, $fid) {
-    foreach ($fields as $pdf_key => $field) {
-      switch ($pdf_key) {
-        case 'ImageField':
-          $field['value'] = '[node:field_test_image]';
-          break;
-
-        case 'TextField':
-          $field['value'] = '[node:title]';
-          break;
-      }
-      fillpdf_fields_create_update($fid, $pdf_key, $field, TRUE);
-    }
-  }
-
-  /**
-   * @param $fields
-   * @param $fid
-   */
-  protected function mapFillPdfFieldsToTaxonomyTermFields($fields, $fid) {
-    foreach ($fields as $pdf_key => $field) {
-      switch ($pdf_key) {
-        case 'ImageField':
-          $field['value'] = '[term:field_term_image]';
-          break;
-
-        case 'TextField':
-          $field['value'] = '[term:name]';
-          break;
-      }
-      fillpdf_fields_create_update($fid, $pdf_key, $field, TRUE);
-    }
   }
 
 }

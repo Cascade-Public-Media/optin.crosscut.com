@@ -23,12 +23,11 @@ define('FILLPDF_REPLACEMENTS_DESCRIPTION', t("<p>Tokens, such as those from CCK,
 function fillpdf_settings($form, &$form_state) {
   $fillpdf_service = variable_get('fillpdf_service');
 
-  $scheme_options = _fillpdf_scheme_options();
-
+  $scheme_options = fillpdf_scheme_options();
   $form['fillpdf_scheme'] = array(
     '#type' => 'radios',
     '#title' => t('Template download method'),
-    '#default_value' => variable_get('fillpdf_scheme', isset($scheme_options['public']) ? 'public' : key($options)),
+    '#default_value' => variable_get('fillpdf_scheme', isset($scheme_options['public']) ? 'public' : key($scheme_options)),
     '#options' => $scheme_options,
     '#description' => t('This setting is used as the download method for uploaded templates. The use of public files is more efficient, but does not provide any access control. Changing this setting will require you to migrate associated files and data yourself and is not recommended after you have uploaded a template.'),
   );
@@ -41,23 +40,6 @@ function fillpdf_settings($form, &$form_state) {
     'local' => t('LEGACY. USE FILLPDF LOCALSERVER INSTEAD.'),
   );
 
-  // Check for FillPDF LocalServer.
-  $local_status = fillpdf_localservice_check();
-  if ($local_status === FALSE) {
-    $options['local_service'] .= '<div class="messages warning">' . t('FillPDF LocalService is not properly installed. Was unable to contact %local_server', array('%local_server' => variable_get('fillpdf_local_service_endpoint'))) . '</div>';
-  }
-
-  // Check for JavaBridge.
-  if (!(file_exists(drupal_get_path('module', 'fillpdf') . '/lib/JavaBridge/java/Java.inc'))) {
-    $options['local'] .= '<div class="messages warning">' . t('JavaBridge is not installed locally.') . '</div>';
-  }
-
-  // Check for pdftk.
-  $status = fillpdf_pdftk_check(fillpdf_pdftk_path());
-  if ($status === FALSE) {
-    $options['pdftk'] .= '<div class="messages warning">' . t('pdftk is not properly installed.') . '</div>';
-  }
-
   $form['fillpdf_service'] = array(
     '#type' => 'radios',
     '#title' => t('PDF-filling service'),
@@ -65,11 +47,15 @@ function fillpdf_settings($form, &$form_state) {
     '#default_value' => $fillpdf_service,
     '#options' => $options,
   );
+
   $form['remote'] = array(
     '#type' => 'fieldset',
     '#title' => t('Configure FillPDF Service'),
-    '#collapsible' => TRUE,
-    '#collapsed' => $fillpdf_service !== 'remote',
+    '#states' => array(
+      'visible' => array(
+        ':input[name="fillpdf_service"]' => array('value' => 'remote'),
+      ),
+    ),
   );
   $form['remote']['fillpdf_remote_endpoint'] = array(
     '#type' => 'textfield',
@@ -94,49 +80,62 @@ function fillpdf_settings($form, &$form_state) {
       'http' => t('Do not use HTTPS'),
     ),
   );
+
   $form['fillpdf_local_service_endpoint'] = array(
     '#type' => 'textfield',
     '#title' => t('Configure FillPDF LocalServer endpoint (address)'),
     '#default_value' => variable_get('fillpdf_local_service_endpoint'),
     '#description' => t("Enter the network address of your FillPDF LocalServer installation. If you are running the Docker container on port 8085 locally, then the address is <em>http://127.0.0.1:8085</em>. Don't worry; the module will check if it can communicate with LocalServer once you fill in this information."),
+    '#states' => array(
+      'visible' => array(
+        ':input[name="fillpdf_service"]' => array('value' => 'local_service'),
+      ),
+    ),
   );
+
   $form['fillpdf_pdftk_path'] = array(
     '#type' => 'textfield',
     '#title' => t('Configure path to pdftk'),
     '#description' => t("If FillPDF is not detecting your pdftk installation, you can specify the full path to the program here. Include the program name as well. For example, <em>/usr/bin/pdftk</em> is a valid value. You can almost always leave this field blank. If you should set it, you'll probably know."),
     '#default_value' => variable_get('fillpdf_pdftk_path'),
+    '#states' => array(
+      'visible' => array(
+        ':input[name="fillpdf_service"]' => array('value' => 'pdftk'),
+      ),
+    ),
   );
-
-  drupal_add_js(drupal_get_path('module', 'fillpdf') . '/fillpdf.js');
 
   return system_settings_form($form);
-}
-
-/**
- * Returns acceptable file scheme options.
- *
- * Suitable for use with FAPI radio buttons.
- *
- * @return array
- *   Array of acceptable file scheme options as identifyer => translated title.
- */
-function _fillpdf_scheme_options() {
-  return array(
-    'private' => t('Private files'),
-    'public' => t('Public files'),
-  );
 }
 
 /**
  *
  */
 function fillpdf_settings_validate($form, &$form_state) {
-  if ($form_state['values']['fillpdf_pdftk_path']) {
-    $status = fillpdf_pdftk_check($form_state['values']['fillpdf_pdftk_path']);
-    if ($status === FALSE) {
-      form_set_error('fillpdf_pdftk_path', t('The path you have entered for
-      <em>pdftk</em> is invalid. Please enter a valid path.'));
-    }
+  switch ($form_state['values']['fillpdf_service']) {
+    case 'local_service':
+      // Check for FillPDF LocalServer.
+      $status = fillpdf_localservice_check($form_state['values']['fillpdf_local_service_endpoint']);
+      if ($status === FALSE) {
+        form_set_error('fillpdf_local_service_endpoint', t('FillPDF LocalService is not properly installed. Was unable to contact %local_server', array('%local_server' => $form_state['values']['fillpdf_local_service_endpoint'])));
+      }
+      break;
+
+    case 'pdftk':
+      // Check for pdftk.
+      $status = fillpdf_pdftk_check($form_state['values']['fillpdf_pdftk_path']);
+      if ($status === FALSE) {
+        form_set_error('fillpdf_pdftk_path', t('The path you have entered for <em>pdftk</em> is invalid. Please enter a valid path.'));
+      }
+      break;
+
+    case 'local':
+      // Check for JavaBridge.
+      $status = file_exists(drupal_get_path('module', 'fillpdf') . '/lib/JavaBridge/java/Java.inc');
+      if ($status === FALSE) {
+        form_set_error('local', t('JavaBridge is not installed locally.'));
+      }
+      break;
   }
 }
 
@@ -186,6 +185,7 @@ function fillpdf_forms_admin($form, &$form_state) {
       '#type' => 'file',
       '#title' => 'Upload',
       '#description' => 'Upload a PDF template to create a new form',
+      '#attributes' => array('accept' => 'application/pdf'),
     );
     $form['submit'] = array(
       '#type' => 'submit',
@@ -286,7 +286,7 @@ function _fillpdf_save_upload($form_key, $fid = NULL) {
           'fid' => $file->fid,
           'title' => $file->filename,
           'url' => $file->uri,
-          'scheme' => fillpdf_default_scheme(),
+          'scheme' => fillpdf_template_scheme(),
         ))
         ->execute();
       $fid = $file->fid;
@@ -401,11 +401,17 @@ function fillpdf_form_edit($form, &$form_state, $fid) {
     '#type' => 'file',
     '#title' => 'Update PDF template',
     '#description' => 'Update the PDF template used by this form',
+    '#attributes' => array('accept' => 'application/pdf'),
   );
+  $url = fillpdf_pdf_link($fid, NULL, NULL, TRUE);
+  // Unless we're redirecting to the PDF file, return to the form edit page.
+  if (!empty($pdf_form->destination_path) && !$pdf_form->destination_redirect) {
+    $url .= '&destination=admin/structure/fillpdf/' . $fid;
+  }
   $form['pdf_info']['sample_populate'] = array(
     '#type' => 'item',
     '#title' => 'Sample PDF',
-    '#description' => l(t('See which fields are which in this PDF.'), fillpdf_pdf_link($fid, NULL, NULL, TRUE)) . '<br />' .
+    '#description' => l(t('See which fields are which in this PDF.'), $url) . '<br />' .
     t('If you have set a custom path on this PDF, the sample will be saved there silently.'),
   );
   if (!empty($pdf_form->default_nid)) {
@@ -449,12 +455,11 @@ function fillpdf_form_edit($form, &$form_state, $fid) {
     '#maxlength' => 255,
     '#default_value' => $pdf_form->destination_path,
   );
-  $scheme_options = _fillpdf_scheme_options();
   $form['extra']['scheme'] = array(
     '#type' => 'radios',
     '#title' => t('Storage system for generated PDFs'),
     '#default_value' => !empty($pdf_form->scheme) ? $pdf_form->scheme : fillpdf_default_scheme(),
-    '#options' => $scheme_options,
+    '#options' => fillpdf_scheme_options(),
     '#description' => t('This setting is used as the storage/download method for generated PDFs. The use of public files is more efficient, but does not provide any access control. Changing this setting will require you to migrate associated files and data yourself and is not recommended after you have uploaded a template.'),
   );
   $form['extra']['destination_redirect'] = array(
@@ -629,17 +634,7 @@ function fillpdf_form_delete_confirm($form, &$form_state, $pdf_form) {
  */
 function fillpdf_form_delete_confirm_submit($form, &$form_state) {
   $fid = $form['#pdf_form']->fid;
-  db_delete('fillpdf_fields')
-    ->condition('fid', $fid)
-    ->execute();
-
-  $file = file_load($fid);
-  file_usage_delete($file, 'fillpdf', 'fillpdf_form', $fid, 0);
-  file_delete($file);
-
-  db_delete('fillpdf_forms')
-    ->condition('fid', $fid)
-    ->execute();
+  fillpdf_form_delete_template($fid);
   drupal_set_message(t('Your form has been deleted.'));
   $form_state['redirect'] = 'admin/structure/fillpdf';
 }

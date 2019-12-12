@@ -4,18 +4,21 @@ core = 7.x
 package = Other
 dependencies[] = token
 dependencies[] = file
-
-; Note: Tests require PHP 5.4.
-files[] = tests/FillPdfMergeTestCase.test
-files[] = tests/FillPdfTestCase.test
-files[] = tests/FillPdfTestHelper.test
-
 test_dependencies[] = webform
 test_dependencies[] = features
 test_dependencies[] = webform_features
+; Note: Tests require PHP 5.4.
+files[] = tests/FillPdfEntityTestCase.test
+files[] = tests/FillPdfLinkBooleansTestCase.test
+files[] = tests/FillPdfMergeTestCase.test
+files[] = tests/FillPdfNodeTestCase.test
+files[] = tests/FillPdfTestCase.test
+files[] = tests/FillPdfTestHelper.test
+files[] = tests/FillPdfWebformTestCase.test
+configure = admin/config/media/fillpdf
 
-; Information added by Drupal.org packaging script on 2019-01-08
-version = "7.x-1.15"
+; Information added by Drupal.org packaging script on 2019-10-11
+version = "7.x-1.16"
 core = "7.x"
 project = "fillpdf"
-datestamp = "1546973124"
+datestamp = "1570811045"

@@ -15,8 +15,8 @@ features[rules_config][] = rules_product_has_linked_fillpdf_template
 features[rules_config][] = rules_send_fillpdf_link_to_download_pdf_with_order_product_data
 features[rules_config][] = rules_send_link_to_pdf_when_order_status_changes_to_completed
 
-; Information added by Drupal.org packaging script on 2019-01-08
-version = "7.x-1.15"
+; Information added by Drupal.org packaging script on 2019-10-11
+version = "7.x-1.16"
 core = "7.x"
 project = "fillpdf"
-datestamp = "1546973124"
+datestamp = "1570811045"
