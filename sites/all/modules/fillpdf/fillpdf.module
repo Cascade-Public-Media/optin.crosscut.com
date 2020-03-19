@@ -1427,7 +1427,7 @@ function fillpdf_execute_merge($method, array $fields, $fillpdf, $mode = 'url', 
       $api_key = variable_get('fillpdf_api_key', '0');
       $result = _fillpdf_xmlrpc_request(FILLPDF_DEFAULT_SERVLET_URL, 'merge_pdf_v3', base64_encode($contents), $fields, $api_key, $flatten, $image_data);
       if ($result->error == TRUE) {
-        if ($mode == 'stream') {
+        if ($mode === 'stream') {
           file_unmanaged_delete($filename);
         }
         // After error message set in _fillpdf_xmlrpc_request().
@@ -1493,6 +1493,9 @@ function fillpdf_execute_merge($method, array $fields, $fillpdf, $mode = 'url', 
       }
 
       $data = base64_decode(drupal_json_decode($result->data)['pdf']);
+      if ($mode === 'stream') {
+        file_unmanaged_delete($filename);
+      }
       break;
 
     // Local JavaBridge servlet.
